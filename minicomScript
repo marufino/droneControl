@@ -1,0 +1,1 @@
+minicom -b 115200 -D /dev/ttyO4
