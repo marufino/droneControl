@@ -1,7 +1,8 @@
 #!/bin/sh
 pasm -b measureChannels.p
+pasm -b Ultrasonic.p
 g++ -g -w xv11.cpp serialib.cpp -o xv11
-g++ -g -w -std=c++11 -lpthread -lprussdrv control.cpp serialib.cpp -o control
+g++ -g -w -lpthread -lprussdrv control.cpp serialib.cpp -o control
 
 g++ -g -w client.c -o client
 g++ -g -w server.c -o server

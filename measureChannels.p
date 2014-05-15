@@ -103,7 +103,7 @@ START:
          
                SBBO   r6, r0, 12, 4           // if pulse is done (not high) store to memory
                MOV    r6, -1                 // reset channel counter ( -1 since ADDCHAN adds 1 after)
-               //MOV R31.b0, PRU0_R31_VEC_VALID | PRU_EVTOUT_1 // generate interrupt
+               MOV R31.b0, PRU0_R31_VEC_VALID | PRU_EVTOUT_0 // generate interrupt
 
          ADDCHAN4:
             ADD r6, r6, 1                    // Increment channel counter
@@ -191,7 +191,7 @@ START:
 
 
    ITERATIONS:
-      MOV R31.b0, PRU0_R31_VEC_VALID | PRU_EVTOUT_0 // generate interrupt      
+      //MOV R31.b0, PRU0_R31_VEC_VALID | PRU_EVTOUT_0 // generate interrupt      
       QBA   MEASURE
 
 
