@@ -22,12 +22,8 @@
 using namespace std;
 
 #ifdef __linux__
-#define         DEVICE_PORT             "/dev/ttyO4"                         // tty04 for linux
+#define         DEVICE_PORT             "/dev/ttyO1"                         // tty01 for linux
 #endif
-
-#define LAST(k,n) ((k) & ((1<<(n))-1))
-#define MID(k,m,n) LAST((k)>>(m),((n)-(m)))
-
 
 int main()
 {
@@ -39,7 +35,7 @@ int main()
     int speed = 0, index = 0, invalid = 0,
             signalStrength = 0, strengthWarning = 0, distance = 0;
 
-    int distances[360];
+    volatile int distances[360];
     for(int j=0;j<360;j++)
     {
         distances[j] = 0;
@@ -55,12 +51,12 @@ int main()
     printf ("Serial port opened successfully !\n");
 
 
-    while(count<50000)
+    while(count<5000000)
     {
         // Read a char from the serial device
         Ret=LS.Read(buf,1,5000);
         
-        // wait for start bit then parse the message
+        // wait for start byte then parse the message
         if(*buf== 0xfa )
         {            
             Mes = LS.Read(message,21,5000);
@@ -77,10 +73,10 @@ int main()
                 signalStrength = ( message[6+4*i] << 8 ) | message[5+4*i];
                 
                 //printf("distance: %x | %x | %x | %x | %x a \n ",message[3],message[4],message[4] & 0x3f, (message[4] & 0x3f) << 8,distance);
-                /*if(index-0xa0 == 0)
-                    printf("Index: %x | Speed: %x | invalid: %x | distance: %d\n ",index,speed, invalid,distance);*/
+                if(index-0xa0 == 0)
+                    printf("Index: %x | Speed: %x | invalid: %x | distance: %d\n ",index,speed, invalid,distance);
 
-                printf("1: %d - 2: %d - 3: %d - 4: %d - 5: %d \r ",distances[0],distances[30],distances[60],distances[90],distances[120],distances[150]);
+                //printf("1: %d - 2: %d - 3: %d - 4: %d - 5: %d \r ",distances[1],distances[31],distances[61],distances[91],distances[121],distances[151]);
                 
 
 
@@ -93,16 +89,7 @@ int main()
             }
         }
 
-        
-                                                                                // The final character of the string must be a line feed ('\n')
-        /*if (Mes>0)                                                              // If a string has been read from, print the string
-            printf ("Message -");
-        else
-            printf ("TimeOut reached. No data received !\n");                   // If not, print a message.
-    */
         count++;
-
-
     }
 
 

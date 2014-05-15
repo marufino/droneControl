@@ -24,12 +24,19 @@ using namespace std;
 #include <unistd.h>
 #include <prussdrv.h>
 #include <pruss_intc_mapping.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h> 
+#include <string.h>
 
 
 ///LIDAR DEFINES
-#define DEVICE_PORT             "/dev/ttyO4"
-volatile int distances[360];
+#define DEVICE_PORT             "/dev/ttyO1"
+int distances[360];
 
+/// TELEMETRY DEFINES
+bool volatile sendMessage = true; 
 
 ///PRU DEFINES
 #define PRU_NUM 0
@@ -43,57 +50,81 @@ static unsigned int *pru0DataMemory_int, *period;
 #define PERIODCORRECT 216346
 
 // how many cycles to run for
-#define RUNTIME 10000000
+#define RUNTIME 10000000000
 
 
 /// CONTROL DEFINES
 // porportional gain costant
-#define KP 1
+#define KP 2
 
-volatile int pwmSignals[4];
-volatile int pwmCorrections[4];
-#define CORRECTIONCAP 0;
+float volatile pwmSignals[4];
+int volatile pwmCorrection[4] = {30,30,30,30};
+#define LOWESTPWM -100
+#define HIGHESTPWM 100
+
 
 // distance to obstacle before correction is applied
-#define DISTFORCORRECT 2000;
+#define DISTFORCORRECT 1000
 
 // used for converting RC to DUTY CYCLE
-#define MINDUTY 15000;
-#define MAXDUTY 20000;
-#define DUTYRANGE MAXDUTY-MINDUTY;
+static double minduty[4] = {11189.0,12150.0,12460.0,11630.0};
+static double maxduty[4] = {20355.0, 21320.0, 21640.0, 20810.0};
+static double dutyrange[4] = {maxduty[0]-minduty[0],maxduty[1]-minduty[1],maxduty[2]-minduty[2],maxduty[3]-minduty[3]};
 
 // conversion factor from duty cycle (in us) to RC input magnitude ([-100  to 100%]) 
-#define DUTY2RC(x) ((x-MINDUTY)/DUTYRANGE *200 - 100)
-#define RC2DUTY(x) ((x+100)*DUTYRANGE/200 + MINDUTY)
+double duty2rc(float x, int d)
+{
+  return (((double)x-minduty[d])/dutyrange[d])*200.0 - 100;
+} 
 
+float rc2duty(float x, int d)
+{
+  return (((double)x+100.0)*dutyrange[d]/200.0 + minduty[d]);
+}
 
 void *threadFunction(void *value){
-    int pwmCorrected = 0;
+    float pwmCorrected[4] = {0};
     do {
-
         // read memory into pwmSignals for use in control
-        int notimes = prussdrv_pru_wait_event (PRU_EVTOUT_1);
-        pwmSignals[0] = (int)*(pru0DataMemory_int+2);
-        pwmSignals[1] = (int)*(pru0DataMemory_int+3);
-        pwmSignals[2] = (int)*(pru0DataMemory_int+4);
-        pwmSignals[3] = (int)*(pru0DataMemory_int+5);
+        int notimes = prussdrv_pru_wait_event (PRU_EVTOUT_0);
+        
+        pwmSignals[0] = (float)*(pru0DataMemory_int+2);
+        pwmSignals[1] = (float)*(pru0DataMemory_int+3);
+        pwmSignals[2] = (float)*(pru0DataMemory_int+4);
+        pwmSignals[3] = (float)*(pru0DataMemory_int+5);
+
 
         // write corrected pwms to memory
-        /*for (int i=0;i<=3;i++)
+        for (int i=0;i<=3;i++)
         {
-            pwmCorrected = pwmSignals[i] - pwmCorrections[i];
-
+            if (i==0){
+              pwmCorrected[i] = duty2rc(pwmSignals[i],i) + pwmCorrection[1] - pwmCorrection[3];
+            }
+            else if (i==1){
+              pwmCorrected[i] = duty2rc(pwmSignals[i],i) + pwmCorrection[0] - pwmCorrection[2];
+            }
+            else{
+              pwmCorrected[i] = duty2rc(pwmSignals[i],i);
+            }
+              
             // make sure to "cap" correction   
-            if (pwmCorrected<correctionCap)
-                pwmCorrected = correctionCap;
+            if (pwmCorrected[i] < LOWESTPWM)
+                pwmCorrected[i] = LOWESTPWM;
 
-            // store to memort
-            *(pru0DataMemory_int+2+i) = DUTY2RC(pwmCorrected);
-        }*/
+            if (pwmCorrected[i] > HIGHESTPWM)
+                pwmCorrected[i] = HIGHESTPWM;
 
-      printf("Signals are Aileron: %f , Elevator: %f , Throttle: %f , Rudder: %f \r", DUTY2RC(pwmSignals[0]), DUTY2RC(pwmSignals[1]), DUTY2RC(pwmSignals[2]), DUTY2RC(pwmSignals[3]));
 
-      prussdrv_pru_clear_event (PRU_EVTOUT_1, PRU0_ARM_INTERRUPT);
+
+            // store to memory
+            *(pru0DataMemory_int+(7+i)) = rc2duty(pwmCorrected[i],i);
+        }
+
+      //printf("Signals are Aileron: %f , %f ,  %f\r", duty2rc(pwmSignals[0],0),pwmCorrected[0], rc2duty(pwmCorrected[0],0)  );
+
+      //printf("Signals are Aileron: %f , Rudder: %f , Throttle: %f , Elevator: %f \r", duty2rc(pwmSignals[0],0), duty2rc(pwmSignals[1],1), duty2rc(pwmSignals[2],2), duty2rc(pwmSignals[3],3));
+
+      prussdrv_pru_clear_event (PRU_EVTOUT_0, PRU0_ARM_INTERRUPT);
    } while (1);
 }
 
@@ -136,13 +167,15 @@ void *lidar(void *value)
                 strengthWarning = message[4+4*i] >> 6 & 0x01; 
                 distance = ((message[4+4*i] & 0x3f) << 8) | message[3+4*i];
                 signalStrength = ( message[6+4*i] << 8 ) | message[5+4*i];
-                
+
                 //printf("distance: %x | %x | %x | %x | %x a \n ",message[3],message[4],message[4] & 0x3f, (message[4] & 0x3f) << 8,distance);
-                /*if(index-0xa0 == 0)
-                    printf("Index: %x | Speed: %x | invalid: %x | distance: %d\n ",index,speed, invalid,distance);*/
-
-                printf("1: %d - 2: %d - 3: %d - 4: %d - 5: %d \r ",distances[0],distances[30],distances[60],distances[90],distances[120],distances[150]);
-
+                if(index-0xa0 == 0 || index-0xc0 == 0)
+                {
+                  //printf("Index: %x | Speed: %x | invalid: %x | distance: %d\n ",index,speed, invalid,distance);*/
+                  
+                  // send telemetry data
+                  sendMessage = true;
+                }
                 // store based on index
                 if(!invalid)
                 {
@@ -150,35 +183,138 @@ void *lidar(void *value)
                     distances[(index-0xa0)*4+i] = distance;
                 }
             }
+
+            printf("1: %d - 2: %d - 3: %d - 4: %d \r ",distances[1],distances[91],distances[181],distances[271]);
+
+            /*if(!invalid)
+            {
+              printf("%d\n",(index-0xa0)*4);
+            }*/
         }
 
     }
 }
 
+
+void *controlThread(void *value)
+{
+   float err = 0;
+   printf("Starting control algorithm\n");
+   while(1)
+   {
+     //*******************/
+     // Compute Errors   //
+     //*******************/
+     for (int direction=0;direction<=3;direction++)
+     {
+         // compute error term 100 = max correction
+         err = (DISTFORCORRECT - distances[(360/4)*direction+1])*50/DISTFORCORRECT;
+        
+         // only bother with corrections if distance is within the correction distance
+         
+         if (err>0)
+         {
+             pwmCorrection[direction] = KP * err;
+         }
+         else // else error = 0 || don't make corrections
+         {
+             pwmCorrection[direction] = 0;
+         }
+     }
+   }
+}
+
+void error(const char *msg)
+{
+    perror(msg);
+    //exit(0);
+}
+
+void *telemetryThread(void *value)
+{
+    int sockfd, portno, n;
+    struct sockaddr_in serv_addr;
+    struct hostent *server;
+    char* argv[3] = {"","",""};
+    argv[1] = "192.168.4.7";
+    argv[2] = "520";
+
+    printf("%s:%s\n",argv[1],argv[2]);
+
+    char buffer[2000];
+    char temp[4];
+
+    portno = atoi(argv[2]);
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0) 
+        error("ERROR opening socket");
+    server = gethostbyname(argv[1]);
+    if (server == NULL) {
+        fprintf(stderr,"ERROR, no such host\n");
+        exit(0);
+    }
+    bzero((char *) &serv_addr, sizeof(serv_addr));
+    serv_addr.sin_family = AF_INET;
+    bcopy((char *)server->h_addr, 
+         (char *)&serv_addr.sin_addr.s_addr,
+         server->h_length);
+    serv_addr.sin_port = htons(portno);
+    if (connect(sockfd,(struct sockaddr *) &serv_addr,sizeof(serv_addr)) < 0) 
+        error("ERROR connecting");
+
+    while(1)
+    {
+      while(!sendMessage);
+      bzero(buffer,2000);
+
+      // add distances from LIDAR
+      for (int i=0;i<360;i++)
+      {
+        sprintf(temp,"%d,",distances[i]);
+        strcat(buffer,temp);
+      }
+
+      // add inputs
+      for (int i=0;i<4;i++)
+      {
+        sprintf(temp,"%f,",duty2rc(pwmSignals[i],i));
+        strcat(buffer,temp);
+      }
+
+      // add corrections
+      for (int i=0;i<4;i++)
+      {
+        sprintf(temp,"%d,",pwmCorrection[i]);
+        strcat(buffer,temp);
+      }
+
+
+      strcat(buffer,"\n");
+      n = write(sockfd,buffer,strlen(buffer));
+      if (n < 0) 
+           error("ERROR writing to socket");
+      sendMessage = false;
+    }
+
+    //close(sockfd);
+}
+
 int main()
 {
+    pthread_t threadLidar, threadPWM, threadControl, threadTelemetry;
 
-    float err, dist, dutyCycle, correctedPWM;
-
-    pthread_t threadLidar, threadPWM;
-
+    // init volatile globals used
     for(int j=0;j<360;j++)
     {
         distances[j] = 6000;
     }
 
-    // start thread for Lidar measurements
-    if(pthread_create(&threadLidar, NULL, &lidar, NULL)){
-       printf("Failed to create thread!\n");
-   }
-    printf("Lidar Thread created\n");
+    for(int j=0;j<4;j++)
+    {
+      pwmSignals[j]=0;
+    }
 
-   // start thread for handling pwm passthrough & correction
-      if(pthread_create(&threadPWM, NULL, &threadFunction, NULL)){
-       printf("Failed to create thread!");
-   }
-   printf("PWM Thread created\n");
-
+   // create PRU Interrupt controller
    tpruss_intc_initdata pruss_intc_initdata = PRUSS_INTC_INITDATA;
 
    // Allocate and initialize memory
@@ -189,81 +325,50 @@ int main()
    // Map PRU's INTC
    prussdrv_pruintc_init(&pruss_intc_initdata);
 
-   // Copy data to PRU memory - different way
+   // Copy data to PRU memory
    prussdrv_map_prumem(PRUSS0_PRU0_DATARAM, &pru0DataMemory);
    pru0DataMemory_int = (unsigned int *) pru0DataMemory;
-   // Use the first 4 bytes for the number of samples
+
+   // zero the memory we'll be using
+   for(int j=0;j<10;j++)
+    {
+      *(pru0DataMemory_int+j) = 0;
+    } 
+
+   // number of program cycles to run for
    *pru0DataMemory_int = RUNTIME;
 
-   // Period
+   // signal period (used by PRU program to compute duty cycle)
    *(pru0DataMemory_int+6) = PERIODCORRECT;
 
-   // Load and execute binary on PRU
+   // Load and execute binary on PRU that measures and generates PWM signals
    prussdrv_exec_program (PRU_NUM, "./measureChannels.bin");
-   
 
+    // start thread for Lidar measurements
+    if(pthread_create(&threadLidar, NULL, &lidar, NULL)){
+       printf("Failed to create thread!\n");
+    }
+    printf("Lidar Thread created\n");
 
+   // start thread for handling pwm passthrough & correction
+    if(pthread_create(&threadPWM, NULL, &threadFunction, NULL)){
+       printf("Failed to create thread!");
+    }
+   printf("PWM Thread created\n");
 
-     /********************/
-     // Compute Errors   //
-     /********************/
-     for (int direction=0;direction<=7;direction++)
-     {
-         // compute error term 
-         err = distance[direction]-distForCorrect
-        
-         // only bother with corrections if distance is within the correction distance
-         if (err>0)
-             error[direction] = err;
-         else // else error = 0 || don't make corrections
-             error[direction] = 0;
-     }
+    // start thread for calculating control corrections
+    if(pthread_create(&threadControl, NULL, &controlThread, NULL)){
+       printf("Failed to create thread!\n");
+    }
+   printf("Control Thread created\n");
 
-     // compute derivative average of last N errors
-     // compute Integral of last N errors
+   // start thread for telemetry communication
+    if(pthread_create(&threadTelemetry, NULL, &telemetryThread, NULL)){
+       printf("Failed to create thread!\n");
+    }
+   printf("Telemetry Thread created\n");
 
-        
-     /***********************/
-     // Apply Corrections   //
-     /***********************/
-     // correct pilot's desired inputs
-     // when error is at max it should result in 
-     // complete reversal of direction
-
-     for (int channel=0;channel<=3;channel++)
-     {
-         // Determine orientation of ultrasonic readings
-
-
-         // correct based on error
-         correctedPWM = PWM[channel] - ( * Kp);
-
-         // make sure PWMs are within -100 to 100 range before writing to memory
-         if (correctedPWM > 100)
-             correctedPWM = 100;
-         else if (correctedPWM < -100)
-             correctedPWM = -100;
-
-         PWM[channel] = correctedPWM;
-
-     }
-
-
-
-
-
-   printf("waiting for event\n");
-   int n = prussdrv_pru_wait_event (PRU_EVTOUT_0);
-   printf("PRU program completed, event number %d.\n", n);
-   printf("The data that is in memory is:\n");
-   printf("- the number of samples used is %d.\n", *pru0DataMemory_int);
-
-   // number of loops = period
-   float period1 = (float)*(pru0DataMemory_int+2);
-   float period2 = (float)*(pru0DataMemory_int+3);
-   float period3 = (float)*(pru0DataMemory_int+4);
-   float period4 = (float)*(pru0DataMemory_int+5);
-   printf("periods are Ch1: %f s , Ch2: %f s , Ch3: %f s , Ch4: %f s \n", period1, period2, period3, period4);
+   while(1);
 
    /* Disable PRU and close memory mappings */
    prussdrv_pru_disable(PRU_NUM);

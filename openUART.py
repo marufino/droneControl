@@ -1,3 +1,3 @@
 import Adafruit_BBIO.UART as UART
  
-UART.setup("UART4")
+UART.setup("UART1")
