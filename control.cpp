@@ -2,7 +2,7 @@
 Control Algorithm for collision avoidance
 
 Inputs:     xv-11 lidar distance data
-            desired pilot inputs to KK2 board 
+            desired pilot inputs to KK2 board
 
 Outputs:    corrected outputs to KK2 board
 
@@ -10,6 +10,13 @@ TODO
 
 Goal for 0.1
 working hackish porportional control
+
+Changes to be made:
+---Add a SIGINT Handler
+while(1) fix/wait()/semaphore
+Ultrasonic interrupt/semaphore
+Confirm Serial.read blocking
+Semaphore for threads for safe R/W
 
 @author Miguel Rufino
 **/
@@ -28,7 +35,7 @@ using namespace std;
 #include <sys/socket.h>
 #include <sys/mman.h>
 #include <netinet/in.h>
-#include <netdb.h> 
+#include <netdb.h>
 #include <string.h>
 
 ///LIDAR DEFINES
@@ -36,7 +43,7 @@ using namespace std;
 int distances[360];
 
 /// TELEMETRY DEFINES
-bool volatile sendMessage = true; 
+bool volatile sendMessage = true;
 
 static void *pru0DataMemory, *pru1DataMemory;
 static unsigned int *pru0DataMemory_int, *pru1DataMemory_int, *pruSharedMemory, *period;
@@ -68,11 +75,19 @@ static double minduty[4] = {11189.0,11150.0,12460.0,10630.0};
 static double maxduty[4] = {20355.0, 21320.0, 21640.0, 21810.0};
 static double dutyrange[4] = {maxduty[0]-minduty[0],maxduty[1]-minduty[1],maxduty[2]-minduty[2],maxduty[3]-minduty[3]};
 
-// conversion factor from duty cycle (in us) to RC input magnitude ([-100  to 100%]) 
+// Signal handler to catch CTRL-C and Exit
+static volatile int keepRunning = 1;
+
+void  INThandler(int sig)
+{
+     keepRunning = 0;
+}
+
+// conversion factor from duty cycle (in us) to RC input magnitude ([-100  to 100%])
 double duty2rc(float x, int d)
 {
   return (((double)x-minduty[d])/dutyrange[d])*200.0 - 100;
-} 
+}
 
 float rc2duty(float x, int d)
 {
@@ -84,7 +99,7 @@ void *PWMThread(void *value){
     do {
         // read memory into pwmSignals for use in control
         int notimes = prussdrv_pru_wait_event (PRU_EVTOUT_0);
-        
+
 		for(int i=0;i<=9;i++)
         {
             ultraDistances[i] = (float)*((unsigned int *)(pru1DataMemory+0x110+i*0x10));
@@ -110,8 +125,8 @@ void *PWMThread(void *value){
             else{
               pwmCorrected[i] = duty2rc(pwmSignals[i],i);
             }
-              
-            // make sure to "cap" correction   
+
+            // make sure to "cap" correction
             /*if (pwmCorrected[i] < LOWESTPWM)
                 pwmCorrected[i] = LOWESTPWM;
 
@@ -129,6 +144,7 @@ void *PWMThread(void *value){
       //printf("Signals are Aileron: %f , Rudder: %f , Throttle: %f , Elevator: %f \r", duty2rc(pwmSignals[0],0), duty2rc(pwmSignals[1],1), duty2rc(pwmSignals[2],2), duty2rc(pwmSignals[3],3));
 
       prussdrv_pru_clear_event (PRU_EVTOUT_0, PRU0_ARM_INTERRUPT);
+      usleep(100);
    } while (1);
 }
 
@@ -142,6 +158,7 @@ void *USThread(void *value)
             ultraDistances[i] = ultraDistances[i]*0.0000872103;
         }
         printf("ULTRASONIC: %f : %f : %f : %f : %f : %f : %f \r", ultraDistances[0], ultraDistances[1], ultraDistances[2], ultraDistances[3], ultraDistances[4], ultraDistances[5], ultraDistances[6], ultraDistances[7]);
+        usleep(1000);
     }
 }
 
@@ -152,7 +169,7 @@ void *lidar(void *value)
     int Ret;
     char buf[1];
     char message[22];
-    
+
     int speed = 0, index = 0, invalid = 0,
             signalStrength = 0, strengthWarning = 0, distance = 0;
 
@@ -165,14 +182,14 @@ void *lidar(void *value)
     }
     printf ("Serial port opened successfully !\n");
 
-    
+
     while(1)
     {
         // Read a char from the serial device
         LS.Read(buf,1,5000);
         // wait for start bit then parse the message
         if(*buf== 0xfa )
-        {           
+        {
             LS.Read(message,21,5000);
 
             index           = message[0];
@@ -182,7 +199,7 @@ void *lidar(void *value)
             for (int i=0;i<=3;i++)
             {
                 invalid         = message[4+4*i] >> 7;
-                strengthWarning = message[4+4*i] >> 6 & 0x01; 
+                strengthWarning = message[4+4*i] >> 6 & 0x01;
                 distance = ((message[4+4*i] & 0x3f) << 8) | message[3+4*i];
                 signalStrength = ( message[6+4*i] << 8 ) | message[5+4*i];
 
@@ -190,14 +207,14 @@ void *lidar(void *value)
                 if(index-0xa0 == 0 || index-0xc0 == 0)
                 {
                   //printf("Index: %x | Speed: %x | invalid: %x | distance: %d\n ",index,speed, invalid,distance);*/
-                  
+
                   // send telemetry data
                   sendMessage = true;
                 }
                 // store based on index
                 if(!invalid)
                 {
-                    //printf("index: %d\n",(index-0xa0)*4+i);    
+                    //printf("index: %d\n",(index-0xa0)*4+i);
                     distances[(index-0xa0)*4+i] = distance;
                 }
             }
@@ -208,6 +225,10 @@ void *lidar(void *value)
             {
               printf("%d\n",(index-0xa0)*4);
             }*/
+        }else{
+            //if the start bit is not detected, yield the processor for 8us?
+            usleep(8);
+
         }
 
     }
@@ -227,9 +248,9 @@ void *controlThread(void *value)
      {
          // compute error term 100 = max correction
          err = (DISTFORCORRECT - distances[(360/4)*direction+1])*50/DISTFORCORRECT;
-        
+
          // only bother with corrections if distance is within the correction distance
-         
+
          if (err>0)
          {
              pwmCorrection[direction] = KP * err;
@@ -239,6 +260,7 @@ void *controlThread(void *value)
              pwmCorrection[direction] = 0;
          }
      }
+   usleep(1000);
    }
 }
 
@@ -264,7 +286,7 @@ void *telemetryThread(void *value)
 
     portno = atoi(argv[2]);
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) 
+    if (sockfd < 0)
         error("ERROR opening socket");
     server = gethostbyname(argv[1]);
     if (server == NULL) {
@@ -273,16 +295,16 @@ void *telemetryThread(void *value)
     }
     bzero((char *) &serv_addr, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET;
-    bcopy((char *)server->h_addr, 
+    bcopy((char *)server->h_addr,
          (char *)&serv_addr.sin_addr.s_addr,
          server->h_length);
     serv_addr.sin_port = htons(portno);
-    if (connect(sockfd,(struct sockaddr *) &serv_addr,sizeof(serv_addr)) < 0) 
+    if (connect(sockfd,(struct sockaddr *) &serv_addr,sizeof(serv_addr)) < 0)
         error("ERROR connecting");
 
     while(1)
     {
-      while(!sendMessage);
+      while(!sendMessage); //add a sleep here?
       bzero(buffer,2000);
 
       // add distances from LIDAR
@@ -309,9 +331,10 @@ void *telemetryThread(void *value)
 
       strcat(buffer,"\n");
       n = write(sockfd,buffer,strlen(buffer));
-      if (n < 0) 
+      if (n < 0)
            error("ERROR writing to socket");
       sendMessage = false;
+      usleep(5)
     }
 
     //close(sockfd);
@@ -319,6 +342,8 @@ void *telemetryThread(void *value)
 
 int main()
 {
+    signal(SIGINT, INThandler);
+
     pthread_t threadLidar, threadPWM, threadUS, threadControl, threadTelemetry;
 
     // init volatile globals used
@@ -359,7 +384,7 @@ int main()
     {
       *(pru0DataMemory_int+j) = 0;
       *(pru1DataMemory_int+j) = 0;
-    } 
+    }
 
    // number of program cycles to run for
    *pru0DataMemory_int = RUNTIME;
@@ -400,7 +425,7 @@ int main()
     }
    printf("Telemetry Thread created\n");
 
-   while(1);
+   while(keepRunning);
 
    /* Disable PRUs and close memory mappings */
    prussdrv_pru_disable(0);
