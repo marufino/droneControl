@@ -63,6 +63,7 @@ static unsigned int *sharedMemory;
 
 float volatile pwmSignals[4],ultraDistances[8];
 int volatile pwmCorrection[4] = {30,30,30,30};
+float volatile pwmCorrected[4] = {0};
 #define LOWESTPWM -100
 #define HIGHESTPWM 100
 
@@ -95,7 +96,7 @@ float rc2duty(float x, int d)
 }
 
 void *PWMThread(void *value){
-    float pwmCorrected[4] = {0};
+    
     do {
         // read memory into pwmSignals for use in control
         int notimes = prussdrv_pru_wait_event (PRU_EVTOUT_0);
@@ -113,7 +114,13 @@ void *PWMThread(void *value){
         pwmSignals[2] = (float)*(pru0DataMemory_int+4);
         pwmSignals[3] = (float)*(pru0DataMemory_int+5);
 
-        // write corrected pwms to memory
+	// store to memory
+	for (int i=0;i<=3;i++)
+        {
+	    *(pru0DataMemory_int+(7+i)) = rc2duty(pwmCorrected[i],i);
+        }
+        
+        // compute corrected pwms
         for (int i=0;i<=3;i++)
         {
             if (i==0){
@@ -133,10 +140,6 @@ void *PWMThread(void *value){
             if (pwmCorrected[i] > HIGHESTPWM)
                 pwmCorrected[i] = HIGHESTPWM;
 			*/
-
-
-            // store to memory
-            *(pru0DataMemory_int+(7+i)) = rc2duty(pwmCorrected[i],i);
         }
 
       //printf("Signals are Aileron: %f , %f ,  %f\r", duty2rc(pwmSignals[0],0),pwmCorrected[0], rc2duty(pwmCorrected[0],0)  );
